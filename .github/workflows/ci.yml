@@ -139,3 +139,46 @@ jobs:
       - name: Build debug APK
         shell: bash
         run: flutter build apk --debug --target-platform android-arm64
+
+  ios-test:
+    name: iOS build and unit tests
+    # The Linux jobs run in the CI builder image; macOS runners cannot use
+    # container jobs, so Flutter is checked out at the pinned version instead.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install Flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Flutter
+        uses: ./.github/actions/setup-flutter
+
+      - name: Generate Xcode config
+        shell: bash
+        run: flutter build ios --simulator --debug --config-only
+
+      # Pick an available iPhone simulator instead of hard-coding a model,
+      # since runner images change which simulators they ship.
+      - name: Run native XCTests
+        shell: bash
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available --json | jq -r \
+            '[.devices | to_entries[] | select(.key | test("iOS")) | .value[]
+              | select(.name | startswith("iPhone"))][0].udid')
+          echo "Using simulator $udid"
+          xcodebuild test \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -destination "id=$udid" \
+            CODE_SIGNING_ALLOWED=NO
