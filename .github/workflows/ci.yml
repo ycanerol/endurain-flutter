@@ -7,7 +7,8 @@ on:
   pull_request:
 
 env:
-  # Keep in sync with docker/flutter-build/Dockerfile and the image workflow.
+  # Keep in sync with docker/flutter-build/Dockerfile, the image workflow and
+  # ios.yml.
   FLUTTER_VERSION: 3.47.3
 
 concurrency:
@@ -139,91 +140,3 @@ jobs:
       - name: Build debug APK
         shell: bash
         run: flutter build apk --debug --target-platform android-arm64
-
-  # The macOS job is the slowest one, so pull requests only run it when they
-  # touch the iOS project, plugin dependencies or CI itself. Pushes to main
-  # always run it, since a merge can break the iOS project even when neither
-  # side did on its own.
-  ios-changes:
-    name: Detect iOS changes
-    runs-on: ubuntu-latest
-    outputs:
-      ios: ${{ steps.diff.outputs.ios }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
-
-      # For pull requests HEAD is the test merge commit, so its first parent
-      # is the base branch and the diff is exactly the pull request's changes.
-      - name: Check changed paths
-        id: diff
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
-            echo "ios=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git diff --name-only HEAD^1 HEAD | grep -qE \
-            '^(ios/|pubspec\.(yaml|lock)$|\.github/(workflows/ci\.yml|actions/))'; then
-            echo "ios=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ios=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  ios-test:
-    name: iOS build and unit tests
-    needs: ios-changes
-    if: needs.ios-changes.outputs.ios == 'true'
-    # The Linux jobs run in the CI builder image; macOS runners cannot use
-    # container jobs, so Flutter is checked out at the pinned version instead.
-    runs-on: macos-26
-    timeout-minutes: 45
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-
-      # Cold-booting a simulator takes minutes on a fresh runner, so start it
-      # now and let it boot while Flutter is installed and the app is built.
-      # An available iPhone is picked instead of a hard-coded model, since
-      # runner images change which simulators they ship.
-      - name: Boot simulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          udid=$(xcrun simctl list devices available --json | jq -r \
-            '[.devices | to_entries[] | select(.key | test("iOS")) | .value[]
-              | select(.name | startswith("iPhone"))][0].udid')
-          echo "Using simulator $udid"
-          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
-          xcrun simctl boot "$udid"
-
-      - name: Install Flutter
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch "$FLUTTER_VERSION" \
-            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
-          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
-
-      - name: Set up Flutter
-        uses: ./.github/actions/setup-flutter
-
-      - name: Generate Xcode config
-        shell: bash
-        run: flutter build ios --simulator --debug --config-only
-
-      - name: Run native XCTests
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcrun simctl bootstatus "$SIMULATOR_UDID"
-          xcodebuild test \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -destination "id=$SIMULATOR_UDID" \
-            CODE_SIGNING_ALLOWED=NO
