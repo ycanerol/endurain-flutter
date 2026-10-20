@@ -152,6 +152,21 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Cold-booting a simulator takes minutes on a fresh runner, so start it
+      # now and let it boot while Flutter is installed and the app is built.
+      # An available iPhone is picked instead of a hard-coded model, since
+      # runner images change which simulators they ship.
+      - name: Boot simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available --json | jq -r \
+            '[.devices | to_entries[] | select(.key | test("iOS")) | .value[]
+              | select(.name | startswith("iPhone"))][0].udid')
+          echo "Using simulator $udid"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid"
+
       - name: Install Flutter
         shell: bash
         run: |
@@ -167,18 +182,13 @@ jobs:
         shell: bash
         run: flutter build ios --simulator --debug --config-only
 
-      # Pick an available iPhone simulator instead of hard-coding a model,
-      # since runner images change which simulators they ship.
       - name: Run native XCTests
         shell: bash
         run: |
           set -euo pipefail
-          udid=$(xcrun simctl list devices available --json | jq -r \
-            '[.devices | to_entries[] | select(.key | test("iOS")) | .value[]
-              | select(.name | startswith("iPhone"))][0].udid')
-          echo "Using simulator $udid"
+          xcrun simctl bootstatus "$SIMULATOR_UDID"
           xcodebuild test \
             -workspace ios/Runner.xcworkspace \
             -scheme Runner \
-            -destination "id=$udid" \
+            -destination "id=$SIMULATOR_UDID" \
             CODE_SIGNING_ALLOWED=NO
